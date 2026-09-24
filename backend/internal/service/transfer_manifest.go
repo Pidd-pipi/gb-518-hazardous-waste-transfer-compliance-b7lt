@@ -124,6 +124,15 @@ func (s *transferManifestService) Transition(ctx context.Context, id uint, input
 			return model.TransferManifest{}, err
 		}
 	}
+	// The filed-destination match is enforced only on (re)submission of a draft.
+	// Once submitted a manifest's destination is locked and immutable, so later
+	// filing adjustments must not disrupt already-submitted or in-transit
+	// manifests: they keep moving; only a draft being submitted is blocked.
+	if target == "submitted" {
+		if err := s.validateDestinationFiling(ctx, current); err != nil {
+			return model.TransferManifest{}, err
+		}
+	}
 	before := current.Status
 	current.Status = target
 	current.Version = input.ExpectedVersion + 1
@@ -165,6 +174,41 @@ func (s *transferManifestService) validateLinkedParties(ctx context.Context, man
 		return fmt.Errorf("%w: carrier license must be verified and unexpired", ErrInvalidInput)
 	}
 	return nil
+}
+
+// validateDestinationFiling reconciles the manifest destination against the
+// generator's current filing item-by-item. A destination that was never filed
+// or whose filing has since been revoked blocks (re)submission, and the error
+// names the concrete location together with its license problem. The manifest
+// row and its version are never modified by a failed check.
+func (s *transferManifestService) validateDestinationFiling(ctx context.Context, manifest model.TransferManifest) error {
+	generator, err := s.generators.FindByCode(ctx, manifest.GeneratorCode)
+	if err != nil {
+		return fmt.Errorf("%w: linked generator is unavailable", ErrInvalidInput)
+	}
+	return validateFiledDestination(generator, manifest.Destination)
+}
+
+func validateFiledDestination(generator model.WasteGenerator, destination string) error {
+	wanted := model.NormalizeDestinationName(destination)
+	if wanted == "" {
+		return fmt.Errorf("%w: destination location is required for manifest filing", ErrInvalidInput)
+	}
+	var revoked *model.DisposalDestination
+	for i := range generator.Destinations {
+		entry := generator.Destinations[i]
+		if model.NormalizeDestinationName(entry.FacilityName) != wanted {
+			continue
+		}
+		if entry.Status == model.DestinationStatusActive {
+			return nil
+		}
+		revoked = &entry
+	}
+	if revoked != nil {
+		return fmt.Errorf("%w: destination %q operating license %s has been revoked for generator %s; only currently filed destinations may be used", ErrInvalidInput, destination, revoked.LicenseNumber, generator.Code)
+	}
+	return fmt.Errorf("%w: destination %q is not among generator %s filed disposal destinations; add the facility and operating license to the generator record first", ErrInvalidInput, destination, generator.Code)
 }
 
 func validateTransferManifestBusinessFields(code, name, facility, owner, generatorCode, carrierCode, wasteCode, destination, evidence string, quantityKg float64) error {

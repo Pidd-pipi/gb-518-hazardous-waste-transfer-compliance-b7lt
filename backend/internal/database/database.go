@@ -78,6 +78,7 @@ func migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&model.User{}, &model.AuditLog{},
 		&model.WasteGenerator{},
+		&model.DisposalDestination{},
 		&model.CarrierProfile{},
 		&model.TransferManifest{},
 		&model.ComplianceCheck{},
@@ -150,7 +151,30 @@ func seedWasteGenerator(ctx context.Context, db *gorm.DB) error {
 			Category: "复核", RiskLevel: "high", MetricValue: 37.5, MetricUnit: "score",
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-518-03"},
 	}
-	return db.WithContext(ctx).Create(&items).Error
+	if err := db.WithContext(ctx).Create(&items).Error; err != nil {
+		return err
+	}
+	return seedDisposalDestinations(ctx, db, items)
+}
+
+func seedDisposalDestinations(ctx context.Context, db *gorm.DB, generators []model.WasteGenerator) error {
+	var count int64
+	if err := db.WithContext(ctx).Model(&model.DisposalDestination{}).Count(&count).Error; err != nil || count > 0 {
+		return err
+	}
+	idByCode := make(map[string]uint, len(generators))
+	for _, generator := range generators {
+		idByCode[generator.Code] = generator.ID
+	}
+	now := time.Now().UTC()
+	// WG-001 files two active disposal plants plus one revoked filing so draft
+	// manifests can exercise both the match and the revoked/missing gates.
+	rows := []model.DisposalDestination{
+		{GeneratorID: idByCode["WG-001"], FacilityName: "合规处置中心 A", LicenseNumber: "DISPOSAL-LIC-A-001", Status: model.DestinationStatusActive, CreatedAt: now, UpdatedAt: now},
+		{GeneratorID: idByCode["WG-001"], FacilityName: "资源化利用中心 B", LicenseNumber: "DISPOSAL-LIC-B-002", Status: model.DestinationStatusActive, CreatedAt: now, UpdatedAt: now},
+		{GeneratorID: idByCode["WG-001"], FacilityName: "旧版焚烧处置点", LicenseNumber: "DISPOSAL-LIC-OLD-000", Status: model.DestinationStatusRevoked, CreatedAt: now, UpdatedAt: now},
+	}
+	return db.WithContext(ctx).Create(&rows).Error
 }
 
 func seedCarrierProfile(ctx context.Context, db *gorm.DB) error {

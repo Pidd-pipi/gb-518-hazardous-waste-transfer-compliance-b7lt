@@ -48,6 +48,13 @@ for resource in generators carriers manifests checks; do
   curl -fsS "$backend_url/api/$resource?page=1&pageSize=20" -H "Authorization: Bearer $viewer_token" | jq -e '.data | type == "array"' >/dev/null
 done
 
+# 备案去向：WG-001 的档案列表必须带回有效与已撤销的备案（含处理厂名称和经营许可证号）。
+curl -fsS "$backend_url/api/generators?page=1&pageSize=20" -H "Authorization: Bearer $viewer_token" \
+  | jq -e '.data[] | select(.code == "WG-001")
+      | ([.destinations[] | select(.status == "active")] | length) >= 2
+        and ([.destinations[] | select(.status == "revoked")] | length) == 1
+        and ([.destinations[] | select(.facilityName == "合规处置中心 A" and .licenseNumber == "DISPOSAL-LIC-A-001")] | length) == 1' >/dev/null
+
 now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 stamp=$(date '+%s')
 manifest_code="TM-VALIDATE-$stamp"
@@ -67,6 +74,26 @@ created=$(curl -fsS -X POST "$backend_url/api/manifests" -H "Authorization: Bear
 manifest_id=$(printf '%s' "$created" | jq -er '.data.id')
 manifest_version=$(printf '%s' "$created" | jq -er '.data.version')
 printf '%s' "$created" | jq -e '.data.status == "draft" and .data.generatorCode == "WG-001" and .data.carrierCode == "CP-002"' >/dev/null
+
+# 草稿联单去向未备案时提交必须被拦下，并返回具体地点；联单与版本保持原样。
+unfiled_code="TM-UNFILED-$stamp"
+unfiled_payload=$(printf '%s' "$manifest_payload" | jq --arg code "$unfiled_code" '.code=$code | .destination="未备案处置中心 Z"')
+unfiled=$(curl -fsS -X POST "$backend_url/api/manifests" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$unfiled_payload")
+unfiled_id=$(printf '%s' "$unfiled" | jq -er '.data.id')
+unfiled_block=$(curl -sS -X POST "$backend_url/api/manifests/$unfiled_id/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d '{"status":"submitted","expectedVersion":1,"reason":"unfiled destination must block"}')
+printf '%s' "$unfiled_block" | jq -e '.error == "business_rule" and (.message | contains("未备案处置中心 Z"))' >/dev/null
+curl -fsS "$backend_url/api/manifests/$unfiled_id" -H "Authorization: Bearer $operator_token" \
+  | jq -e '.data.status == "draft" and .data.version == 1' >/dev/null
+# 种子中 WG-001 的「旧版焚烧处置点」备案已撤销，草稿使用该地点也必须被拦下并返回许可证号。
+revoked_payload=$(printf '%s' "$manifest_payload" | jq --arg code "TM-REVOKED-$stamp" '.code=$code | .destination="旧版焚烧处置点"')
+revoked=$(curl -fsS -X POST "$backend_url/api/manifests" -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' -d "$revoked_payload")
+revoked_id=$(printf '%s' "$revoked" | jq -er '.data.id')
+revoked_block=$(curl -sS -X POST "$backend_url/api/manifests/$revoked_id/transition" \
+  -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \
+  -d '{"status":"submitted","expectedVersion":1,"reason":"revoked destination must block"}')
+printf '%s' "$revoked_block" | jq -e '.error == "business_rule" and (.message | contains("DISPOSAL-LIC-OLD-000")) and (.message | contains("revoked"))' >/dev/null
 
 skip_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$backend_url/api/manifests/$manifest_id/transition" \
   -H "Authorization: Bearer $operator_token" -H 'Content-Type: application/json' \

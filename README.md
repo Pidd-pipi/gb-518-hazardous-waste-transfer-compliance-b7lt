@@ -33,10 +33,15 @@ docker compose down -v --remove-orphans
 
 | 业务模块 | 后端实体 | API 前缀 | 状态流 |
 |---|---|---|---|
-| 产废单位 | `WasteGenerator` | `/api/generators` | 许可编号、有效期、废物类别与证据 |
+| 产废单位 | `WasteGenerator` | `/api/generators` | 许可编号、有效期、废物类别、证据与备案处置去向 |
 | 承运资质 | `CarrierProfile` | `/api/carriers` | 许可证、有效期、有效车辆与证据 |
 | 转运清单 | `TransferManifest` | `/api/manifests` | 产废单位、承运方、废物代码、重量与去向 |
 | 合规核验 | `ComplianceCheck` | `/api/checks` | 关联联单、核验清单、证据与决定依据 |
+
+- 产废单位档案可登记一处或多处**备案处置去向**（`DisposalDestination`），每项记录处理厂名称与经营许可证号；新建、修改单位时整体维护，列表展示有效备案数、已撤销备案与许可证号。
+- 备案去向采用软撤销：修改单位时从清单移除的备案转为 `revoked` 保留备查，重新登记同名处理厂会恢复为 `active` 并更新许可证号。
+- 联单**提交**时，去向与产废单位当前备案逐项核验：未备案返回具体地点，备案已撤销同时返回地点与许可证号（422，联单与 version 不变）。
+- 已提交和运输中的联单不受后续备案调整影响（去向在提交时锁定），只有草稿重新提交会被拦下；发运仍执行产废/承运资质与有效期核验。
 
 - JWT 登录和 viewer/operator/reviewer/admin 四级 RBAC，后端 middleware、前端守卫、导航与按钮同步生效。
 - 联单提交和发运前会重新核验产废许可为 `active`、承运资质为 `verified`，且双方证照仍在有效期内。
@@ -134,6 +139,7 @@ cd .. && docker compose config --quiet
 |---|---|---|
 | `ManifestState` | `draft, submitted, in_transit, received, rejected` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
 | `CheckState` | `pending, pass, fail, escalated` | `backend/internal/constants/status.go`、`frontend/src/types/status.ts` |
+| 备案去向状态 | `active, revoked`（`DisposalDestination.Status`） | `backend/internal/model/disposal_destination.go`、`frontend/src/types/domain.ts`（`DisposalDestination`） |
 
 每个实体自己的完整迁移图同样位于 `backend/internal/constants/status.go`；页面使用的状态列表位于 `frontend/src/types/status.ts`。修改状态时必须同步两处并更新对应服务测试。
 

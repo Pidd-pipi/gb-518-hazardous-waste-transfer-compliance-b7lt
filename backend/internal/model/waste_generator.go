@@ -19,6 +19,9 @@ type WasteGenerator struct {
 	EffectiveAt     time.Time `json:"effectiveAt"`
 	Evidence        string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode     string    `json:"relatedCode" gorm:"size:64;index"`
+	// Destinations holds the optional, independently maintained 备案去向 list.
+	// Preloading is managed by the repository so paginated lists stay consistent.
+	Destinations []DisposalDestination `json:"destinations" gorm:"foreignKey:GeneratorID;references:ID;constraint:OnDelete:CASCADE"`
 }
 
 func (item *WasteGenerator) GetBase() *BaseModel { return &item.BaseModel }

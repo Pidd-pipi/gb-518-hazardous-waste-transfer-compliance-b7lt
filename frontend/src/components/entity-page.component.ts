@@ -6,10 +6,11 @@ import { MatInputModule } from '@angular/material/input';
 import { useAuth } from '../hooks/use-auth';
 import { createPagination } from '../hooks/use-pagination';
 import type { EntityStore } from '../stores/factory';
-import type { DomainRecord, EntityConfig } from '../types/domain';
+import type { DisposalDestination, DomainRecord, EntityConfig } from '../types/domain';
 import { TRANSITIONS } from '../types/status';
 import { formatDate } from '../utils/format';
 import { ConfirmDialogComponent } from './common/confirm-dialog.component';
+import { DestinationEditorComponent } from './common/destination-editor.component';
 import { LicensePanelComponent } from './common/license-panel.component';
 import { MetricCardComponent } from './common/metric-card.component';
 import { StatusBadgeComponent } from './common/status-badge.component';
@@ -17,7 +18,7 @@ import { StatusBadgeComponent } from './common/status-badge.component';
 @Component({
   selector: 'app-entity-page',
   standalone: true,
-  imports: [CommonModule, AsyncPipe, FormsModule, MatButtonModule, MatInputModule, StatusBadgeComponent, MetricCardComponent, ConfirmDialogComponent, LicensePanelComponent],
+  imports: [CommonModule, AsyncPipe, FormsModule, MatButtonModule, MatInputModule, StatusBadgeComponent, MetricCardComponent, ConfirmDialogComponent, LicensePanelComponent, DestinationEditorComponent],
   template: `
     <main class="workspace" *ngIf="store.state$ | async as state">
       <header class="page-header">
@@ -42,25 +43,32 @@ import { StatusBadgeComponent } from './common/status-badge.component';
 
       <section class="table-shell">
         <table>
-          <thead><tr><th>编码</th><th>名称</th><th>状态</th><th>业务凭证</th><th>风险</th><th>责任人</th><th>指标</th><th>更新时间</th><th>操作</th></tr></thead>
+          <thead><tr><th>编码</th><th>名称</th><th>状态</th><th>业务凭证</th><th *ngIf="isGenerator()">备案去向</th><th>风险</th><th>责任人</th><th>指标</th><th>更新时间</th><th>操作</th></tr></thead>
           <tbody>
             <tr *ngFor="let item of state.items; trackBy: trackById">
               <td><strong>{{ item.code }}</strong></td>
               <td>{{ item.name }}<small>{{ item.facility }}</small></td>
               <td><app-status-badge [status]="item.status" /></td>
               <td><span class="domain-detail">{{ domainDetail(item) }}</span><small>{{ item.evidence }}</small></td>
+              <td *ngIf="isGenerator()">
+                <span class="filing filing--ok" *ngIf="activeDestinations(item).length; else noFiling">{{ activeDestinations(item).length }} 处有效备案</span>
+                <ng-template #noFiling><span class="filing filing--none">未备案去向</span></ng-template>
+                <small *ngFor="let destination of activeDestinations(item)">{{ destination.facilityName }} · {{ destination.licenseNumber }}</small>
+                <small *ngIf="revokedDestinations(item).length" class="filing-revoked">{{ revokedDestinations(item).length }} 处已撤销</small>
+              </td>
               <td><span [class]="'risk risk--' + item.riskLevel">{{ item.riskLevel }}</span></td>
               <td>{{ item.owner }}</td>
               <td>{{ item.metricValue }} {{ item.metricUnit }}</td>
               <td>{{ formatDate(item.updatedAt) }}</td>
               <td class="actions">
+                <button *ngIf="isGenerator() && auth.hasMinimumRole('operator')" class="table-action" (click)="openDestinationEditor(item)">备案去向</button>
                 <ng-container *ngIf="canTransition()">
                   <button *ngFor="let target of transitions(item)" class="table-action" (click)="openTransition(item, target)">{{ transitionLabel(target) }}</button>
                 </ng-container>
-                <span *ngIf="!canTransition() || transitions(item).length === 0" class="muted">{{ auth.hasMinimumRole('operator') ? '流程结束' : '只读' }}</span>
+                <span *ngIf="(!canTransition() || transitions(item).length === 0) && !(isGenerator() && auth.hasMinimumRole('operator'))" class="muted">{{ auth.hasMinimumRole('operator') ? '流程结束' : '只读' }}</span>
               </td>
             </tr>
-            <tr *ngIf="!state.items.length && !state.loading"><td colspan="9" class="empty">暂无记录</td></tr>
+            <tr *ngIf="!state.items.length && !state.loading"><td [attr.colspan]="isGenerator() ? 10 : 9" class="empty">暂无记录</td></tr>
           </tbody>
         </table>
         <div *ngIf="state.loading" class="loading">正在同步业务数据…</div>
@@ -79,6 +87,8 @@ import { StatusBadgeComponent } from './common/status-badge.component';
         <p>状态迁移会校验关联资质，并与请求 ID 审计记录在同一事务中保存。</p>
         <strong>{{ pending?.item?.status }} → {{ pending?.status }}</strong>
       </app-confirm-dialog>
+
+      <app-destination-editor [open]="!!editing" [record]="editing" [requestError]="state.error" (cancel)="closeDestinationEditor()" (save)="saveDestinations($event)" />
     </main>
   `
 })
@@ -91,6 +101,7 @@ export class EntityPageComponent implements OnInit {
   search = '';
   showCreate = false;
   pending: { item: DomainRecord; status: string } | null = null;
+  editing: DomainRecord | null = null;
 
   constructor(private readonly changeDetector: ChangeDetectorRef) {}
 
@@ -99,6 +110,27 @@ export class EntityPageComponent implements OnInit {
   highRisk(items: DomainRecord[]): number { return items.filter((item) => ['high', 'critical'].includes(item.riskLevel)).length; }
   statusCount(items: DomainRecord[]): number { return new Set(items.map((item) => item.status)).size; }
   isLicensePage(): boolean { return this.config.key === 'wasteGenerator' || this.config.key === 'carrierProfile'; }
+  isGenerator(): boolean { return this.config.key === 'wasteGenerator'; }
+  activeDestinations(item: DomainRecord): DisposalDestination[] {
+    return (item.destinations || []).filter((destination) => destination.status !== 'revoked');
+  }
+  revokedDestinations(item: DomainRecord): DisposalDestination[] {
+    return (item.destinations || []).filter((destination) => destination.status === 'revoked');
+  }
+  openDestinationEditor(item: DomainRecord): void { this.editing = item; this.changeDetector.detectChanges(); }
+  closeDestinationEditor(): void { this.editing = null; this.changeDetector.detectChanges(); }
+
+  async saveDestinations(destinations: DisposalDestination[]): Promise<void> {
+    if (!this.editing) return;
+    const record = this.editing;
+    const payload: Partial<DomainRecord> = { ...record, expectedVersion: record.version, destinations };
+    try {
+      await this.store.updateRecord(this.config.path, record.id, payload);
+      this.editing = null;
+    } catch { /* Store exposes the request error in its observable state. */ }
+    finally { this.changeDetector.detectChanges(); }
+  }
+
   canTransition(): boolean { return this.auth.hasMinimumRole(this.config.transitionRole); }
   transitions(item: DomainRecord): readonly string[] { return TRANSITIONS[this.config.key]?.[item.status] ?? []; }
 
@@ -144,7 +176,7 @@ export class EntityPageComponent implements OnInit {
     };
     const expiresAt = new Date(now + 365 * 86_400_000).toISOString();
     const specific: Partial<DomainRecord> = this.config.key === 'wasteGenerator'
-      ? { permitNumber: `PERMIT-${String(now).slice(-8)}`, permitExpiresAt: expiresAt, wasteCategories: 'HW08 废矿物油' }
+      ? { permitNumber: `PERMIT-${String(now).slice(-8)}`, permitExpiresAt: expiresAt, wasteCategories: 'HW08 废矿物油', destinations: [{ facilityName: '合规处置中心 A', licenseNumber: `DISPOSAL-${String(now).slice(-8)}` }] }
       : this.config.key === 'carrierProfile'
         ? { licenseNumber: `CARRIER-${String(now).slice(-8)}`, licenseExpiresAt: expiresAt, vehicleCount: 6 }
         : this.config.key === 'transferManifest'
