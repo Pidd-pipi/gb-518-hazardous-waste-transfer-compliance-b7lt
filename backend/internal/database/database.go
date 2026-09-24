@@ -78,6 +78,7 @@ func migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&model.User{}, &model.AuditLog{},
 		&model.WasteGenerator{},
+		&model.GeneratorDestination{},
 		&model.CarrierProfile{},
 		&model.TransferManifest{},
 		&model.ComplianceCheck{},
@@ -106,6 +107,10 @@ func Seed(ctx context.Context, db *gorm.DB) error {
 	}
 
 	if err := seedWasteGenerator(ctx, db); err != nil {
+		return err
+	}
+
+	if err := seedGeneratorDestinations(ctx, db); err != nil {
 		return err
 	}
 
@@ -151,6 +156,27 @@ func seedWasteGenerator(ctx context.Context, db *gorm.DB) error {
 			EffectiveAt: now.Add(6 * time.Hour), Evidence: "已完成基础证据核对", RelatedCode: "REL-518-03"},
 	}
 	return db.WithContext(ctx).Create(&items).Error
+}
+
+func seedGeneratorDestinations(ctx context.Context, db *gorm.DB) error {
+	var count int64
+	if err := db.WithContext(ctx).Model(&model.GeneratorDestination{}).Count(&count).Error; err != nil || count > 0 {
+		return err
+	}
+	var generator model.WasteGenerator
+	if err := db.WithContext(ctx).Where("code = ?", "WG-001").First(&generator).Error; err != nil {
+		return err
+	}
+	// Destinations mirror the hand-written destinations of the seed manifests
+	// so the demo workflow (submit/dispatch TM-001..TM-003) keeps passing the
+	// registration gate; one extra revoked row demonstrates a stale filing.
+	rows := []model.GeneratorDestination{
+		{GeneratorID: generator.ID, FacilityName: "合规处置中心 A", LicenseNo: "DISP-LIC-A-001", Status: model.GeneratorDestinationStatusActive},
+		{GeneratorID: generator.ID, FacilityName: "资源化利用中心 B", LicenseNo: "DISP-LIC-B-002", Status: model.GeneratorDestinationStatusActive},
+		{GeneratorID: generator.ID, FacilityName: "安全填埋中心 C", LicenseNo: "DISP-LIC-C-003", Status: model.GeneratorDestinationStatusActive},
+		{GeneratorID: generator.ID, FacilityName: "旧版临时焚烧点 D", LicenseNo: "DISP-LIC-D-004", Status: model.GeneratorDestinationStatusRevoked},
+	}
+	return db.WithContext(ctx).Create(&rows).Error
 }
 
 func seedCarrierProfile(ctx context.Context, db *gorm.DB) error {

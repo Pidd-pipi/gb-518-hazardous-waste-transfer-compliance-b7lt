@@ -43,6 +43,10 @@ func (s *wasteGeneratorService) Create(ctx context.Context, input dto.CreateWast
 	if err := validateWasteGeneratorBusinessFields(input.Code, input.Name, input.Facility, input.Owner, input.PermitNumber, input.WasteCategories, input.Evidence, input.PermitExpiresAt); err != nil {
 		return model.WasteGenerator{}, err
 	}
+	destinations, err := normalizeDestinations(input.RegisteredDestinations)
+	if err != nil {
+		return model.WasteGenerator{}, err
+	}
 	item := model.WasteGenerator{
 		BaseModel: model.BaseModel{
 			Code: strings.ToUpper(strings.TrimSpace(input.Code)), Name: strings.TrimSpace(input.Name),
@@ -54,7 +58,8 @@ func (s *wasteGeneratorService) Create(ctx context.Context, input dto.CreateWast
 		Category: strings.TrimSpace(input.Category), RiskLevel: input.RiskLevel,
 		MetricValue: input.MetricValue, MetricUnit: strings.TrimSpace(input.MetricUnit),
 		EffectiveAt: input.EffectiveAt.UTC(), Evidence: strings.TrimSpace(input.Evidence),
-		RelatedCode: strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
+		RelatedCode:            strings.ToUpper(strings.TrimSpace(input.RelatedCode)),
+		RegisteredDestinations: destinations,
 	}
 	if err := s.repository.CreateAudited(ctx, &item, newAuditLog(actor, requestID, "create", "WasteGenerator", "", item.Status, "created generator permit")); err != nil {
 		return model.WasteGenerator{}, fmt.Errorf("create 产废单位: %w", err)
@@ -68,6 +73,10 @@ func (s *wasteGeneratorService) Update(ctx context.Context, id uint, input dto.U
 		return model.WasteGenerator{}, err
 	}
 	if err := validateWasteGeneratorBusinessFields(current.Code, input.Name, input.Facility, input.Owner, input.PermitNumber, input.WasteCategories, input.Evidence, input.PermitExpiresAt); err != nil {
+		return model.WasteGenerator{}, err
+	}
+	destinations, err := normalizeDestinations(input.RegisteredDestinations)
+	if err != nil {
 		return model.WasteGenerator{}, err
 	}
 	current.Name = strings.TrimSpace(input.Name)
@@ -84,9 +93,10 @@ func (s *wasteGeneratorService) Update(ctx context.Context, id uint, input dto.U
 	current.EffectiveAt = input.EffectiveAt.UTC()
 	current.Evidence = strings.TrimSpace(input.Evidence)
 	current.RelatedCode = strings.ToUpper(strings.TrimSpace(input.RelatedCode))
+	current.RegisteredDestinations = destinations
 	current.Version = input.ExpectedVersion + 1
 	current.UpdatedAt = time.Now().UTC()
-	if err := s.repository.UpdateAudited(ctx, id, input.ExpectedVersion, &current, newAuditLog(actor, requestID, "update", "WasteGenerator", current.Status, current.Status, "updated generator permit and evidence")); err != nil {
+	if err := s.repository.UpdateAudited(ctx, id, input.ExpectedVersion, &current, newAuditLog(actor, requestID, "update", "WasteGenerator", current.Status, current.Status, "updated generator permit, evidence and registered destinations")); err != nil {
 		return model.WasteGenerator{}, fmt.Errorf("update 产废单位: %w", err)
 	}
 	return s.repository.Get(ctx, id)
@@ -137,4 +147,36 @@ func validateWasteGeneratorBusinessFields(code, name, facility, owner, permitNum
 		return fmt.Errorf("%w: generator permit must not be expired", ErrInvalidInput)
 	}
 	return nil
+}
+
+// normalizeDestinations trims and validates the optional 备案去向 list. The
+// list itself is optional, but once a generator registers destinations each
+// entry needs a facility name and licence number, facility names must be
+// unique inside the list, and an empty status defaults to active.
+func normalizeDestinations(input []dto.GeneratorDestinationInput) ([]model.GeneratorDestination, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+	result := make([]model.GeneratorDestination, 0, len(input))
+	seen := make(map[string]bool, len(input))
+	for _, row := range input {
+		name := strings.TrimSpace(row.FacilityName)
+		licenseNo := strings.ToUpper(strings.TrimSpace(row.LicenseNo))
+		if name == "" || licenseNo == "" {
+			return nil, fmt.Errorf("%w: registered destination requires facility name and operating licence number", ErrInvalidInput)
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			return nil, fmt.Errorf("%w: duplicated registered destination facility %q", ErrInvalidInput, name)
+		}
+		seen[key] = true
+		status := strings.TrimSpace(row.Status)
+		if status == "" {
+			status = model.GeneratorDestinationStatusActive
+		}
+		result = append(result, model.GeneratorDestination{
+			FacilityName: name, LicenseNo: licenseNo, Status: status,
+		})
+	}
+	return result, nil
 }

@@ -19,6 +19,11 @@ type WasteGenerator struct {
 	EffectiveAt     time.Time `json:"effectiveAt"`
 	Evidence        string    `json:"evidence" gorm:"size:2000"`
 	RelatedCode     string    `json:"relatedCode" gorm:"size:64;index"`
+	// RegisteredDestinations holds the optional 备案去向 list. Matching is done
+	// against the current rows, so registering destinations is deliberately
+	// optional, but once a generator registers one every manifest destination
+	// must match an active row.
+	RegisteredDestinations []GeneratorDestination `json:"registeredDestinations,omitempty" gorm:"foreignKey:GeneratorID;constraint:OnDelete:CASCADE"`
 }
 
 func (item *WasteGenerator) GetBase() *BaseModel { return &item.BaseModel }

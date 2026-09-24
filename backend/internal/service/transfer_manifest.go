@@ -157,6 +157,9 @@ func (s *transferManifestService) validateLinkedParties(ctx context.Context, man
 	if generator.Status != "active" || !generator.PermitExpiresAt.After(time.Now().UTC()) {
 		return fmt.Errorf("%w: generator permit must be active and unexpired", ErrInvalidInput)
 	}
+	if err := s.validateRegisteredDestination(ctx, generator.ID, manifest); err != nil {
+		return err
+	}
 	carrier, err := s.carriers.FindByCode(ctx, manifest.CarrierCode)
 	if err != nil {
 		return fmt.Errorf("%w: linked carrier is unavailable", ErrInvalidInput)
@@ -165,6 +168,40 @@ func (s *transferManifestService) validateLinkedParties(ctx context.Context, man
 		return fmt.Errorf("%w: carrier license must be verified and unexpired", ErrInvalidInput)
 	}
 	return nil
+}
+
+// validateRegisteredDestination enforces 备案去向 at manifest submit and
+// dispatch. Registration is optional: a generator without any registered
+// destinations keeps the legacy free-text behaviour. Once it has registered
+// destinations, the manifest destination must match a CURRENT entry by
+// facility name; a missing entry and a revoked entry each produce a distinct
+// error that names the concrete location and licence number. Validation runs
+// before any state/version write, so a failed gate leaves the manifest and
+// its optimistic-lock version untouched.
+func (s *transferManifestService) validateRegisteredDestination(ctx context.Context, generatorID uint, manifest model.TransferManifest) error {
+	registered, err := s.generators.Destinations(ctx, generatorID)
+	if err != nil {
+		return fmt.Errorf("load registered destinations: %w", err)
+	}
+	if len(registered) == 0 {
+		return nil
+	}
+	destination := strings.TrimSpace(manifest.Destination)
+	var revoked *model.GeneratorDestination
+	for i := range registered {
+		if strings.TrimSpace(registered[i].FacilityName) != destination {
+			continue
+		}
+		if registered[i].Status == model.GeneratorDestinationStatusRevoked {
+			revoked = &registered[i]
+			continue
+		}
+		return nil
+	}
+	if revoked != nil {
+		return fmt.Errorf("%w: destination %q is revoked for generator %s; operating licence %s is no longer valid", ErrInvalidInput, destination, manifest.GeneratorCode, revoked.LicenseNo)
+	}
+	return fmt.Errorf("%w: destination %q is not registered for generator %s; the manifest must name a currently registered facility with a valid operating licence", ErrInvalidInput, destination, manifest.GeneratorCode)
 }
 
 func validateTransferManifestBusinessFields(code, name, facility, owner, generatorCode, carrierCode, wasteCode, destination, evidence string, quantityKg float64) error {

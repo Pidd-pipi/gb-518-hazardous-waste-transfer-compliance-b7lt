@@ -1,10 +1,18 @@
 
+export interface RegisteredDestination {
+  id?: number;
+  facilityName: string;
+  licenseNo: string;
+  status: 'active' | 'revoked';
+}
+
 export interface DomainRecord {
   id: number;
   code: string;
   name: string;
   status: string;
   version: number;
+  expectedVersion?: number;
   description: string;
   facility: string;
   owner: string;
@@ -29,6 +37,7 @@ export interface DomainRecord {
 	manifestCode?: string;
 	checklist?: string;
 	decisionBasis?: string;
+	registeredDestinations?: RegisteredDestination[];
   createdAt: string;
   updatedAt: string;
 }

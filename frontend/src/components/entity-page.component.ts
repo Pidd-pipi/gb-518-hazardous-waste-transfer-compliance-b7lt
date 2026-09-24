@@ -10,6 +10,7 @@ import type { DomainRecord, EntityConfig } from '../types/domain';
 import { TRANSITIONS } from '../types/status';
 import { formatDate } from '../utils/format';
 import { ConfirmDialogComponent } from './common/confirm-dialog.component';
+import { DestinationDialogComponent } from './common/destination-dialog.component';
 import { LicensePanelComponent } from './common/license-panel.component';
 import { MetricCardComponent } from './common/metric-card.component';
 import { StatusBadgeComponent } from './common/status-badge.component';
@@ -17,7 +18,7 @@ import { StatusBadgeComponent } from './common/status-badge.component';
 @Component({
   selector: 'app-entity-page',
   standalone: true,
-  imports: [CommonModule, AsyncPipe, FormsModule, MatButtonModule, MatInputModule, StatusBadgeComponent, MetricCardComponent, ConfirmDialogComponent, LicensePanelComponent],
+  imports: [CommonModule, AsyncPipe, FormsModule, MatButtonModule, MatInputModule, StatusBadgeComponent, MetricCardComponent, ConfirmDialogComponent, DestinationDialogComponent, LicensePanelComponent],
   template: `
     <main class="workspace" *ngIf="store.state$ | async as state">
       <header class="page-header">
@@ -48,12 +49,13 @@ import { StatusBadgeComponent } from './common/status-badge.component';
               <td><strong>{{ item.code }}</strong></td>
               <td>{{ item.name }}<small>{{ item.facility }}</small></td>
               <td><app-status-badge [status]="item.status" /></td>
-              <td><span class="domain-detail">{{ domainDetail(item) }}</span><small>{{ item.evidence }}</small></td>
+              <td><span class="domain-detail">{{ domainDetail(item) }}</span><small>{{ item.evidence }}</small><small *ngIf="isGeneratorPage()" class="destination-summary">{{ destinationSummary(item) }}</small></td>
               <td><span [class]="'risk risk--' + item.riskLevel">{{ item.riskLevel }}</span></td>
               <td>{{ item.owner }}</td>
               <td>{{ item.metricValue }} {{ item.metricUnit }}</td>
               <td>{{ formatDate(item.updatedAt) }}</td>
               <td class="actions">
+                <button *ngIf="isGeneratorPage() && auth.hasMinimumRole('operator')" class="table-action" (click)="openDestinations(item)">备案去向</button>
                 <ng-container *ngIf="canTransition()">
                   <button *ngFor="let target of transitions(item)" class="table-action" (click)="openTransition(item, target)">{{ transitionLabel(target) }}</button>
                 </ng-container>
@@ -79,6 +81,7 @@ import { StatusBadgeComponent } from './common/status-badge.component';
         <p>状态迁移会校验关联资质，并与请求 ID 审计记录在同一事务中保存。</p>
         <strong>{{ pending?.item?.status }} → {{ pending?.status }}</strong>
       </app-confirm-dialog>
+      <app-destination-dialog *ngIf="isGeneratorPage()" [open]="!!editing" [record]="editing" (cancel)="closeDestinations()" (saved)="saveDestinations()" />
     </main>
   `
 })
@@ -91,6 +94,7 @@ export class EntityPageComponent implements OnInit {
   search = '';
   showCreate = false;
   pending: { item: DomainRecord; status: string } | null = null;
+  editing: DomainRecord | null = null;
 
   constructor(private readonly changeDetector: ChangeDetectorRef) {}
 
@@ -99,12 +103,23 @@ export class EntityPageComponent implements OnInit {
   highRisk(items: DomainRecord[]): number { return items.filter((item) => ['high', 'critical'].includes(item.riskLevel)).length; }
   statusCount(items: DomainRecord[]): number { return new Set(items.map((item) => item.status)).size; }
   isLicensePage(): boolean { return this.config.key === 'wasteGenerator' || this.config.key === 'carrierProfile'; }
+  isGeneratorPage(): boolean { return this.config.key === 'wasteGenerator'; }
   canTransition(): boolean { return this.auth.hasMinimumRole(this.config.transitionRole); }
   transitions(item: DomainRecord): readonly string[] { return TRANSITIONS[this.config.key]?.[item.status] ?? []; }
 
+  destinationSummary(item: DomainRecord): string {
+    const list = item.registeredDestinations ?? [];
+    if (!list.length) return '未备案去向（沿用旧流程）';
+    const active = list.filter((row) => row.status !== 'revoked');
+    const revoked = list.length - active.length;
+    const names = active.slice(0, 2).map((row) => row.facilityName).join('、');
+    const more = active.length > 2 ? ` 等 ${active.length} 处` : '';
+    return `备案去向 ${active.length} 处：${names}${more}${revoked ? ` · 已撤销 ${revoked} 处` : ''}`;
+  }
+
   pageDescription(): string {
     const descriptions: Record<string, string> = {
-      wasteGenerator: '核对产废许可有效期、废物类别与证据文件。',
+      wasteGenerator: '核对产废许可有效期、废物类别、备案去向与证据文件。',
       carrierProfile: '复核承运许可证、有效车辆和资质证据。',
       transferManifest: '关联产废单位与承运方，跟踪联单全流程。',
       complianceCheck: '基于联单证据形成不可回退的核验决定。'
@@ -132,6 +147,13 @@ export class EntityPageComponent implements OnInit {
   closeCreate(): void { this.showCreate = false; this.changeDetector.detectChanges(); }
   openTransition(item: DomainRecord, status: string): void { this.pending = { item, status }; this.changeDetector.detectChanges(); }
   closeTransition(): void { this.pending = null; this.changeDetector.detectChanges(); }
+  openDestinations(item: DomainRecord): void { this.editing = item; this.changeDetector.detectChanges(); }
+  closeDestinations(): void { this.editing = null; this.changeDetector.detectChanges(); }
+
+  async saveDestinations(): Promise<void> {
+    this.editing = null;
+    await this.load();
+  }
 
   async createDemo(): Promise<void> {
     const now = Date.now();
@@ -144,7 +166,10 @@ export class EntityPageComponent implements OnInit {
     };
     const expiresAt = new Date(now + 365 * 86_400_000).toISOString();
     const specific: Partial<DomainRecord> = this.config.key === 'wasteGenerator'
-      ? { permitNumber: `PERMIT-${String(now).slice(-8)}`, permitExpiresAt: expiresAt, wasteCategories: 'HW08 废矿物油' }
+      ? {
+          permitNumber: `PERMIT-${String(now).slice(-8)}`, permitExpiresAt: expiresAt, wasteCategories: 'HW08 废矿物油',
+          registeredDestinations: [{ facilityName: '合规处置中心 A', licenseNo: `DISP-LIC-${String(now).slice(-6)}`, status: 'active' }]
+        }
       : this.config.key === 'carrierProfile'
         ? { licenseNumber: `CARRIER-${String(now).slice(-8)}`, licenseExpiresAt: expiresAt, vehicleCount: 6 }
         : this.config.key === 'transferManifest'
